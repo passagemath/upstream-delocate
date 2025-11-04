@@ -140,12 +140,21 @@ def _sanitize_rpaths(
 
     Returns the paths of modified binaries which require new code signing.
     """
-    needs_signing = set()
+    needs_signing: set[Path] = set()
+    requiring_sanitizes = {}  # requiring -> True
     for required in files_to_delocate:
         # Set relative path for local library
         for requiring, orig_install_name in lib_dict[required].items():
-            if _remove_absolute_rpaths(requiring):
-                needs_signing.add(Path(requiring))
+            requiring_sanitizes[requiring] = True
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor() as executer:
+        for modified_files in executer.map(
+            _remove_absolute_rpaths, requiring_sanitizes
+        ):
+            needs_signing |= modified_files
+
     return needs_signing
 
 
