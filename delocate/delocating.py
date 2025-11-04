@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import logging
 import os
@@ -9,6 +10,7 @@ import re
 import shutil
 import stat
 import struct
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from os.path import abspath, basename, dirname, exists, realpath, relpath
 from os.path import join as pjoin
@@ -38,12 +40,12 @@ from .pkginfo import read_pkg_info, write_pkg_info
 from .tmpdirs import TemporaryDirectory
 from .tools import (
     _remove_absolute_rpaths,
+    _set_install_names,
     _update_signatures,
     dir2zip,
     find_package_dirs,
     get_archs,
     set_install_id,
-    set_install_name,
     zip2dir,
 )
 from .wheeltools import InWheel, rewrite_record
@@ -253,6 +255,10 @@ def _update_install_names(
     """
     needs_codesign = set()
 
+    requiring_updates = defaultdict(
+        list
+    )  # requiring -> (orig_install_name, new_install_name)
+
     for required in files_to_delocate:
         # Set relative path for local library
         for requiring, orig_install_name in lib_dict[required].items():
@@ -272,13 +278,19 @@ def _update_install_names(
                     orig_install_name,
                     new_install_name,
                 )
-                set_install_name(
-                    requiring,
-                    orig_install_name,
-                    new_install_name,
-                    ad_hoc_sign=False,
+                requiring_updates[requiring].append(
+                    (orig_install_name, new_install_name)
                 )
                 needs_codesign.add(Path(requiring))
+
+    with concurrent.futures.ThreadPoolExecutor() as executer:
+        futures = []
+        for requiring, updates in requiring_updates.items():
+            futures.append(
+                executer.submit(_set_install_names, requiring, updates)
+            )
+        for future in futures:
+            future.result()
 
     return needs_codesign
 
